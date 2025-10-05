@@ -1,0 +1,56 @@
+replicaCount: 2
+image:
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/node-todo
+  tag: ""
+  digest: "" # prefer pinned by digest via CI
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+ingress:
+  enabled: true
+  className: nginx # using NGINX for NetworkPolicy demo
+  hosts:
+    - host: todo.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: todo-tls
+      hosts: [todo.example.com]
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3000"
+  prometheus.io/path: "/metrics"
+
+env:
+  GIT_SHA: "local"
+  USE_DYNAMO: "false"
+  AWS_REGION: "us-east-1"
+  DYNAMO_TABLE: "todos"
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # e.g. for IRSA:
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/node-todo-irsa

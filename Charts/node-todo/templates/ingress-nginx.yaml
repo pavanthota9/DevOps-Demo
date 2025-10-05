@@ -1,0 +1,26 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "node-todo.fullname" . }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.className | quote }}
+    cert-manager.io/cluster-issuer: "letsencrypt"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  tls:
+    - hosts: {{- toYaml (pluck "hosts" .Values.ingress | first | pluck "host") | nindent 6 }}
+      secretName: {{ .Values.ingress.tls | first | pluck "secretName" | first }}
+  rules:
+    - host: {{ .Values.ingress.hosts | first | pluck "host" | first }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "node-todo.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}
