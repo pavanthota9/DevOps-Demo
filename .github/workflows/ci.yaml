@@ -1,0 +1,106 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write  # for OIDC to AWS (optional)
+
+env:
+  AWS_REGION: us-east-1
+  APP_NAME: node-todo
+  ECR_REPO: node-todo
+
+jobs:
+  build_test_lint_audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run audit
+
+  docker_build_scan_push:
+    needs: build_test_lint_audit
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set GIT_SHA
+        run: echo "GIT_SHA=${GITHUB_SHA}" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker metadata
+        id: meta
+        run: |
+          echo "image=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}" >> $GITHUB_OUTPUT
+
+      - name: Build image
+        id: build
+        run: |
+          IMAGE="${{ steps.meta.outputs.image }}"
+          docker build --build-arg GIT_SHA=${GITHUB_SHA} -t "$IMAGE:sha-${GITHUB_SHA::12}" .
+          docker push "$IMAGE:sha-${GITHUB_SHA::12}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE:sha-${GITHUB_SHA::12}")
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.2
+      - name: Scan image (fail on High/Critical)
+        run: |
+          trivy image --exit-code 1 --severity HIGH,CRITICAL "${{ steps.build.outputs.digest }}" || {
+            echo "Image scan failed on High/Critical"; exit 1; }
+
+      - name: Generate SBOM (Syft)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.build.outputs.digest }}
+          artifact-name: sbom-${{ github.sha }}.spdx.json
+
+  deploy_eks:
+    needs: docker_build_scan_push
+    if: github.ref == 'refs/heads/main' && secrets.AWS_ROLE_TO_ASSUME != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+      - name: Deploy/Upgrade
+        run: |
+          IMAGE="${{ needs.docker_build_scan_push.outputs.image }}"
+          DIGEST="${{ needs.docker_build_scan_push.outputs.digest }}"
+          helm upgrade --install $APP_NAME ./charts/node-todo \
+            --namespace app --create-namespace \
+            --set image.repository="$IMAGE" \
+            --set image.digest="@${DIGEST#*@}" \
+            --set env.GIT_SHA=${GITHUB_SHA} \
+            --wait --timeout 5m
+
