@@ -1,0 +1,16 @@
+{
+  "env": {
+    "es2023": true,
+    "node": true,
+    "jest": true
+  },
+  "extends": ["eslint:recommended"],
+  "parserOptions": {
+    "ecmaVersion": 2023,
+    "sourceType": "module"
+  },
+  "rules": {
+    "no-unused-vars": ["error", {"args": "none"}],
+    "no-console": "off"
+  }
+}
